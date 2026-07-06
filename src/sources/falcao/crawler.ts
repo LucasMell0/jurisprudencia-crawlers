@@ -56,7 +56,10 @@ function filtersFor(p: CrawlPartition): FalcaoFilters {
 }
 
 async function seedIfNeeded(): Promise<void> {
-  const filtros = await getFiltros();
+  // /pesquisa/filtros exige colecao não-vazia (400 "No value present" se
+  // omitido) — qualquer valor válido serve, a faceta "colecao" retornada
+  // já lista todas as 5 opções com contagem, não só a que foi passada aqui.
+  const filtros = await getFiltros({ colecao: "acordaos" });
   const courts =
     filtros.filtrosDisponiveis.find((f) => f.nomeDoFiltro === "tribunal")?.valoresFiltro.map((v) => v.valor) ?? [];
   const colecoes =

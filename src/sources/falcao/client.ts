@@ -159,8 +159,12 @@ export interface FalcaoFiltrosResponse {
   }[];
 }
 
-/** Facets: tribunais/coleções/classes disponíveis + contagens pro filtro atual. */
-export async function getFiltros(filters: Partial<FalcaoFilters> = { colecao: "" }): Promise<FalcaoFiltrosResponse> {
+/**
+ * Facets: tribunais/coleções/classes disponíveis + contagens pro filtro atual.
+ * `colecao` é obrigatório pra API (400 "No value present" se vazio) — a
+ * faceta "colecao" retornada lista todas as opções de qualquer forma.
+ */
+export async function getFiltros(filters: Partial<FalcaoFilters> = { colecao: "acordaos" }): Promise<FalcaoFiltrosResponse> {
   const params = new URLSearchParams({
     sessionId,
     latitude: "0",
