@@ -31,10 +31,20 @@ import {
 import { splitRange } from "../../core/bisect";
 
 const SOURCE = "falcao";
-const CONCURRENCY = Number(process.env.FALCAO_CONCURRENCY ?? 3);
-const REQUEST_DELAY_MS = Number(process.env.FALCAO_REQUEST_DELAY_MS ?? 300);
+// Concorrência 1 e ritmo bem mais lento que o inicial: em produção, um
+// sessionId sob volume concorrente/rápido (padrão que uma sessão de
+// navegador real não teria) foi bloqueado pelo sistema (403 "Tentativa
+// inválida de acesso ao sistema"). A resposta correta é reduzir volume
+// de verdade, não fabricar sessionIds novos pra continuar no mesmo
+// ritmo — isso seria evadir o controle anti-abuso da própria fonte.
+const CONCURRENCY = Number(process.env.FALCAO_CONCURRENCY ?? 1);
+const REQUEST_DELAY_MS = Number(process.env.FALCAO_REQUEST_DELAY_MS ?? 3_000);
 const SEED_DATE_FROM = process.env.FALCAO_SEED_FROM ?? "1988-01-01";
 const IDLE_POLL_MS = 5 * 60_000;
+// Quando o sistema bloquear por volume (403 genérico, fora dos casos já
+// tratados como "página não autorizada"), para o worker inteiro por um
+// tempo bem maior — continuar tentando é o oposto do que deveria fazer.
+const ABUSE_BLOCK_PAUSE_MS = 15 * 60_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -169,8 +179,27 @@ async function processPartition(p: CrawlPartition): Promise<void> {
   await paginateAndStore(p, p.expected_total);
 }
 
+// Circuit breaker compartilhado entre todos os workers: um 403 genérico
+// (fora dos casos de limite de página já esperados) indica bloqueio por
+// volume no sistema da fonte — resposta correta é PARAR de vez, não
+// continuar tentando com outra partição ou identidade.
+let abuseBlockedUntil = 0;
+
+function isPageLimitError(err: unknown): boolean {
+  return (
+    err instanceof FalcaoApiError &&
+    err.status === 403 &&
+    (err.body.includes("tamanho") || err.body.includes("página"))
+  );
+}
+
 async function worker(id: number): Promise<void> {
   for (;;) {
+    if (Date.now() < abuseBlockedUntil) {
+      await sleep(Math.min(30_000, abuseBlockedUntil - Date.now()));
+      continue;
+    }
+
     const partition = await claimNextPartition(SOURCE);
     if (!partition) {
       await sleep(IDLE_POLL_MS);
@@ -180,13 +209,20 @@ async function worker(id: number): Promise<void> {
     try {
       await processPartition(partition);
     } catch (err) {
+      if (err instanceof FalcaoApiError && err.status === 403 && !isPageLimitError(err)) {
+        // Bloqueio por volume, não erro da partição em si — deixa a
+        // partição como está (retomável) e para todos os workers.
+        console.error(
+          `[falcao] worker ${id}: bloqueio (403) detectado, provavelmente por volume. ` +
+            `Pausando todos os workers por ${ABUSE_BLOCK_PAUSE_MS / 60_000}min.`,
+          err.message
+        );
+        abuseBlockedUntil = Date.now() + ABUSE_BLOCK_PAUSE_MS;
+        continue;
+      }
+
       console.error(`[falcao] worker ${id}: erro na partição ${partition.id}:`, err);
       await markError(partition.id, err instanceof Error ? err.message : String(err)).catch(() => {});
-      if (err instanceof FalcaoApiError && err.status === 403) {
-        // 403 fora dos casos já tratados (ex: WAF/anti-bot mudou de regra) —
-        // dá um respiro maior antes de tentar de novo, pra não martelar.
-        await sleep(30_000);
-      }
     }
 
     await sleep(REQUEST_DELAY_MS);
