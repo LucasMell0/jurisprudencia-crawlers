@@ -103,19 +103,34 @@ function buildParams(filters: FalcaoFilters, page: number, size: number): URLSea
   return params;
 }
 
+// Sem timeout, uma conexão travada (sem resposta, sem erro) prende o
+// worker indefinidamente — nada de circuit breaker ou retry ajuda se o
+// fetch em si nunca resolve.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function fetchWithRetry(url: string, maxRetries = 5): Promise<Response> {
   let attempt = 0;
   for (;;) {
-    const res = await fetch(url, {
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        Referer: REFERER,
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-        "User-Agent": USER_AGENT,
-      },
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          Referer: REFERER,
+          "Sec-Fetch-Site": "same-origin",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Dest": "empty",
+          "User-Agent": USER_AGENT,
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      if (attempt >= maxRetries) throw err;
+      const backoffMs = Math.min(30_000, 500 * 2 ** attempt) + Math.random() * 250;
+      await new Promise((r) => setTimeout(r, backoffMs));
+      attempt++;
+      continue;
+    }
 
     if (res.ok) return res;
 
