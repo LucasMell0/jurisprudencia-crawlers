@@ -30,6 +30,18 @@ import {
 } from "../../core/partitions";
 import { splitRange } from "../../core/bisect";
 
+function log(...args: unknown[]): void {
+  console.log(`[${new Date().toISOString()}]`, ...args);
+}
+
+function logError(...args: unknown[]): void {
+  console.error(`[${new Date().toISOString()}]`, ...args);
+}
+
+function logWarn(...args: unknown[]): void {
+  console.warn(`[${new Date().toISOString()}]`, ...args);
+}
+
 const SOURCE = "falcao";
 // Concorrência 1 e ritmo bem mais lento que o inicial: em produção, um
 // sessionId sob volume concorrente/rápido (padrão que uma sessão de
@@ -81,7 +93,7 @@ async function seedIfNeeded(): Promise<void> {
 
   const inserted = await seedInitialPartitions(SOURCE, courts, colecoes, SEED_DATE_FROM, today());
   if (inserted > 0) {
-    console.log(`[falcao] seed: ${inserted} novas partições-raiz criadas`);
+    log(`[falcao] seed: ${inserted} novas partições-raiz criadas`);
   }
 }
 
@@ -118,7 +130,7 @@ async function splitBySecondaryDimension(p: CrawlPartition, total: number): Prom
   const values = (turmaFacet?.valoresFiltro ?? []).filter((v) => (v.quantidade ?? 0) > 0);
 
   if (values.length === 0) {
-    console.warn(
+    logWarn(
       `[falcao] ${p.court}/${p.source_decision_type} ${p.date_from}: sem facet de turma pra bissectar ` +
         `(total=${total}) — paginando melhor-esforço (só os primeiros ${MAX_RETRIEVABLE})`
     );
@@ -165,7 +177,7 @@ async function processPartition(p: CrawlPartition): Promise<void> {
         const split = await splitBySecondaryDimension(p, total);
         if (split) return;
       }
-      console.warn(
+      logWarn(
         `[falcao] ${p.court}/${p.source_decision_type} ${p.date_from} não bissecta mais ` +
           `(total=${total}) — paginando melhor-esforço`
       );
@@ -212,7 +224,7 @@ async function worker(id: number): Promise<void> {
       if (err instanceof FalcaoApiError && err.status === 403 && !isPageLimitError(err)) {
         // Bloqueio por volume, não erro da partição em si — deixa a
         // partição como está (retomável) e para todos os workers.
-        console.error(
+        logError(
           `[falcao] worker ${id}: bloqueio (403) detectado, provavelmente por volume. ` +
             `Pausando todos os workers por ${ABUSE_BLOCK_PAUSE_MS / 60_000}min.`,
           err.message
@@ -221,7 +233,7 @@ async function worker(id: number): Promise<void> {
         continue;
       }
 
-      console.error(`[falcao] worker ${id}: erro na partição ${partition.id}:`, err);
+      logError(`[falcao] worker ${id}: erro na partição ${partition.id}:`, err);
       await markError(partition.id, err instanceof Error ? err.message : String(err)).catch(() => {});
     }
 
@@ -233,12 +245,12 @@ export async function runCrawlerLoop(): Promise<void> {
   try {
     await seedIfNeeded();
   } catch (err) {
-    console.error("[falcao] falha ao semear partições iniciais:", err);
+    logError("[falcao] falha ao semear partições iniciais:", err);
   }
 
   setInterval(() => {
     getProgressSummary(SOURCE)
-      .then((rows) => console.log("[falcao] progresso:", JSON.stringify(rows)))
+      .then((rows) => log("[falcao] progresso:", JSON.stringify(rows)))
       .catch(() => {});
   }, 60_000);
 
